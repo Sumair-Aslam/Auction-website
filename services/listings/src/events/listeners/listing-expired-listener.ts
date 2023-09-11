@@ -1,0 +1,53 @@
+import { Message } from 'node-nats-streaming';
+// import {
+//   Listener,
+//   ListingExpiredEvent,
+//   ListingStatus,
+//   NotFoundError,
+//   Subjects,
+// } from '@jjmauction/common';
+import {
+  Listener,
+  ListingExpiredEvent,
+  ListingStatus,
+  NotFoundError,
+  Subjects,
+} from 'scytalelabs-auction';
+
+import { Listing } from '../../models';
+import { natsWrapper } from '../../nats-wrapper';
+import { ListingUpdatedPublisher } from '../publishers/listing-updated-publisher';
+import { queueGroupName } from './queue-group-name';
+
+export class ListingExpiredListener extends Listener<ListingExpiredEvent> {
+  queueGroupName = queueGroupName;
+  subject: Subjects.ListingExpired = Subjects.ListingExpired;
+
+  async onMessage(data: ListingExpiredEvent['data'], msg: Message) {
+    const { id } = data;
+    const listing = await Listing.findOne({ where: { id } });
+
+    if (!listing) {
+      throw new NotFoundError();
+    }
+
+    const newStatus =
+      listing.startPrice === listing.currentPrice
+        ? ListingStatus.Expired
+        : ListingStatus.AwaitingPayment;
+
+    await listing.update({ status: newStatus });
+
+    new ListingUpdatedPublisher(natsWrapper.client).publish({
+      id: listing.id,
+      status: listing.status,
+      currentPrice: listing.currentPrice,
+      currentWinnerId: listing.currentWinnerId,
+      totalPrice: listing.totalPrice,
+      quantity: listing.quantity,
+      version: listing.version,
+    });
+
+    msg.ack();
+  }
+}
